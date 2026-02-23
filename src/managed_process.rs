@@ -81,32 +81,30 @@ impl ManagedProcess {
     }
     pub fn stop(&mut self) {
         if let Some(mut child) = self.child.take() {
-
             let _ = child.kill();
-
-            if let Some(port) = self.port {
-                println!("{:?}", pid_from_port(port));
-                if let Some(pid) = pid_from_port(port) {
-                    println!("{}", pid);
-                    println!("{}", port);
-
-                    std::process::Command::new("kill")
-                        .args(["-15", &pid])
-                        .output()
-                        .ok();
-
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-
-                    std::process::Command::new("kill")
-                        .args(["-9", &pid])
-                        .output()
-                        .ok();
-                }
-            }
-
-
-            self.started_at = None;
         }
+
+        if let Some(port) = self.port {
+            println!("{:?}", pid_from_port(port));
+            if let Some(pid) = pid_from_port(port) {
+                println!("{}", pid);
+                println!("{}", port);
+
+                std::process::Command::new("kill")
+                    .args(["-15", &pid])
+                    .output()
+                    .ok();
+
+                std::thread::sleep(std::time::Duration::from_millis(500));
+
+                std::process::Command::new("kill")
+                    .args(["-9", &pid])
+                    .output()
+                    .ok();
+            }
+        }
+
+        self.started_at = None;
     }
 
     pub fn restart(&mut self) {

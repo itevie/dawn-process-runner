@@ -291,6 +291,7 @@ fn main() -> Result<(), io::Error> {
     }
 
     cleanup(&mut terminal);
+    println!("\n");
 
     for mut process in app.processes {
         // println!("{}", process.child.unwrap().id());

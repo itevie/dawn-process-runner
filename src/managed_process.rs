@@ -85,6 +85,7 @@ impl ManagedProcess {
             let _ = child.kill();
 
             if let Some(port) = self.port {
+                println!("{:?}", pid_from_port(port));
                 if let Some(pid) = pid_from_port(port) {
                     println!("{}", pid);
                     println!("{}", port);

@@ -77,14 +77,36 @@ impl ManagedProcess {
             }
         }
     }
-
     pub fn stop(&mut self) {
         if let Some(mut child) = self.child.take() {
 
-            let _ = child.kill();
+            #[cfg(unix)]
+            {
+                use nix::sys::signal::{self, Signal};
+                use nix::unistd::Pid;
 
-            // Give OS time to clean up sockets
-            thread::sleep(std::time::Duration::from_millis(200));
+                let pid = child.id() as i32;
+
+                // Kill process group, not just process
+                let _ = signal::kill(
+                    Pid::from_raw(-pid),
+                    Signal::SIGTERM
+                );
+
+                // Wait for graceful shutdown
+                thread::sleep(std::time::Duration::from_millis(500));
+
+                // Force kill if still alive
+                let _ = signal::kill(
+                    Pid::from_raw(-pid),
+                    Signal::SIGKILL
+                );
+            }
+
+            #[cfg(not(unix))]
+            {
+                let _ = child.kill();
+            }
 
             self.started_at = None;
         }

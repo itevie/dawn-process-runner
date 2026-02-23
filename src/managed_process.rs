@@ -80,7 +80,12 @@ impl ManagedProcess {
 
     pub fn stop(&mut self) {
         if let Some(mut child) = self.child.take() {
+
             let _ = child.kill();
+
+            // Give OS time to clean up sockets
+            thread::sleep(std::time::Duration::from_millis(200));
+
             self.started_at = None;
         }
     }

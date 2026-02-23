@@ -1,32 +1,43 @@
-use std::io::{BufRead, BufReader};
-use std::os::unix::prelude::ExitStatusExt;
-use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Instant;
+use std::{
+    collections::VecDeque,
+    io::{BufRead, BufReader},
+    process::{Child, Command, ExitStatus, Stdio},
+    sync::{Arc, Mutex},
+    thread,
+    time::{Duration, Instant},
+};
+
+const MAX_LOG_LINES: usize = 2000;
+const GRACEFUL_TIMEOUT: Duration = Duration::from_millis(1000);
 
 pub struct ManagedProcess {
     pub name: String,
     pub command: Vec<String>,
+    pub cwd: Option<String>,
+    pub port: Option<u16>,
+
     pub child: Option<Child>,
     pub logs: Arc<Mutex<Vec<String>>>,
     pub started_at: Option<Instant>,
-    pub status: Option<ExitStatus>,
-    pub cwd: Option<String>,
-    pub port: Option<u16>,
+    pub exit_status: Option<ExitStatus>,
 }
 
 impl ManagedProcess {
-    pub fn new(name: &str, command: Vec<String>, cwd: Option<String>, port: Option<u16>) -> Self {
+    pub fn new(
+        name: &str,
+        command: Vec<String>,
+        cwd: Option<String>,
+        port: Option<u16>,
+    ) -> Self {
         Self {
-            name: name.into(),
+            name: name.to_string(),
             command,
             cwd,
+            port,
             child: None,
             logs: Arc::new(Mutex::new(Vec::new())),
             started_at: None,
-            status: None,
-            port
+            exit_status: None,
         }
     }
 
@@ -35,14 +46,16 @@ impl ManagedProcess {
             return;
         }
 
-        let mut cmd = Command::new(&self.command[0]);
-
-        if let Some(ref cwd) = self.cwd {
-            cmd.current_dir(cwd.clone());
+        if self.command.is_empty() {
+            self.push_log("Command is empty");
+            return;
         }
 
-        if self.command.len() > 1 {
-            cmd.args(&self.command[1..]);
+        let mut cmd = Command::new(&self.command[0]);
+        cmd.args(&self.command[1..]);
+
+        if let Some(ref cwd) = self.cwd {
+            cmd.current_dir(cwd);
         }
 
         cmd.stdout(Stdio::piped());
@@ -50,57 +63,53 @@ impl ManagedProcess {
 
         match cmd.spawn() {
             Ok(mut child) => {
-                let logs = self.logs.clone();
+                self.started_at = Some(Instant::now());
+                self.exit_status = None;
 
-                logs.lock().unwrap().push(format!("Working Directory: {:?}", self.cwd.clone()));
-                logs.lock().unwrap().push(format!("Command: {}", self.command.join(" ")));
-                logs.lock().unwrap().push("\n".to_string());
-                logs.lock().unwrap().push("--- Start Logs ---".to_string());
-                logs.lock().unwrap().push("\n".to_string());
+                self.push_log(format!("Started: {}", self.command.join(" ")));
 
-                if let Some(stdout) = child.stdout.take() {
-                    thread::spawn(move || {
-                        let reader = BufReader::new(stdout);
-                        for line in reader.lines() {
-                            if let Ok(line) = line {
-                                logs.lock().unwrap().push(line);
-                            }
-                        }
-                    });
-                }
+                self.spawn_reader(child.stdout.take());
+                self.spawn_reader(child.stderr.take());
 
                 self.child = Some(child);
-                self.started_at = Some(Instant::now());
-            },
-            Err(err) => {
-                let logs = self.logs.clone();
-                logs.lock().unwrap().push(format!("Failed to start: {:?}", err.to_string()));
-                self.status = Some(ExitStatus::from_raw(1));
+            }
+            Err(e) => {
+                self.push_log(format!("Failed to start: {}", e));
             }
         }
     }
+
     pub fn stop(&mut self) {
         if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            println!("Killed {}", self.name);
+            let pid = child.id().to_string();
+
+            // --- Graceful shutdown ---
+            let _ = Command::new("kill").args(["-15", &pid]).output();
+
+            let start = Instant::now();
+
+            while start.elapsed() < GRACEFUL_TIMEOUT {
+                if let Ok(Some(status)) = child.try_wait() {
+                    self.exit_status = Some(status);
+                    self.started_at = None;
+                    self.push_log("Stopped gracefully");
+                    return;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+
+            // --- Force kill ---
+            let _ = Command::new("kill").args(["-9", &pid]).output();
+            let _ = child.wait(); // prevent zombie
+
+            self.push_log("Force killed");
         }
 
+        // Optional fallback: kill by port
         if let Some(port) = self.port {
-            println!("Trying to kill by port {} for {}", port, self.name);
             if let Some(pid) = pid_from_port(port) {
-                println!("Found PID {} for {}", pid, self.name);
-
-                Command::new("kill")
-                    .args(["-15", &pid])
-                    .output()
-                    .ok();
-
-                thread::sleep(std::time::Duration::from_millis(500));
-
-                Command::new("kill")
-                    .args(["-9", &pid])
-                    .output()
-                    .ok();
+                let _ = Command::new("kill").args(["-9", &pid]).output();
+                self.push_log(format!("Killed PID {} on port {}", pid, port));
             }
         }
 
@@ -115,36 +124,66 @@ impl ManagedProcess {
     pub fn status(&mut self) -> &'static str {
         if let Some(child) = &mut self.child {
             if let Ok(Some(status)) = child.try_wait() {
-                self.status = Some(status);
+                self.exit_status = Some(status);
                 self.child = None;
                 self.started_at = None;
                 return "Stopped";
             }
-            "Running"
-        } else {
-            "Stopped"
+            return "Running";
         }
+        "Stopped"
+    }
+
+    pub fn logs(&self) -> Vec<String> {
+        self.logs
+            .lock()
+            .unwrap()
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    fn spawn_reader(&self, stream: Option<impl std::io::Read + Send + 'static>) {
+        if let Some(stream) = stream {
+            let logs = self.logs.clone();
+            thread::spawn(move || {
+                let reader = BufReader::new(stream);
+                for line in reader.lines().flatten() {
+                    let mut guard = logs.lock().unwrap();
+                    guard.push(line);
+                }
+            });
+        }
+    }
+
+    fn push_log<S: Into<String>>(&self, msg: S) {
+        let mut logs = self.logs.lock().unwrap();
+        logs.push(msg.into());
     }
 }
 
 fn pid_from_port(port: u16) -> Option<String> {
-    let cmd = format!(
-        "ss -lptn | grep :{} | sed -n 's/.*pid=\\([0-9]*\\).*/\\1/p'",
-        port
-    );
-
-    let output = std::process::Command::new("sh")
-        .args(["-c", &cmd])
+    let output = Command::new("ss")
+        .args(["-lptn"])
         .output()
         .ok()?;
 
-    let pid = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout);
 
-    if pid.is_empty() {
-        None
-    } else {
-        Some(pid)
+    for line in stdout.lines() {
+        if line.contains(&format!(":{}", port)) {
+            if let Some(start) = line.find("pid=") {
+                let pid_part = &line[start + 4..];
+                let pid: String = pid_part
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect();
+                if !pid.is_empty() {
+                    return Some(pid);
+                }
+            }
+        }
     }
+
+    None
 }

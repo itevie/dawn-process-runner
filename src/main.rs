@@ -207,7 +207,7 @@ fn main() -> Result<(), io::Error> {
                                 "{} [{}{} {}]",
                                 p.name,
                                 status,
-                                if let Some(status) = p.status {
+                                if let Some(status) = p.exit_status {
                                     format!(" (code {})", status.code().unwrap_or(1))
                                 } else {
                                     "".to_string()

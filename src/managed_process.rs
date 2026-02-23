@@ -86,6 +86,9 @@ impl ManagedProcess {
 
             if let Some(port) = self.port {
                 if let Some(pid) = pid_from_port(port) {
+                    println!("{}", pid);
+                    println!("{}", port);
+
                     std::process::Command::new("kill")
                         .args(["-15", &pid])
                         .output()

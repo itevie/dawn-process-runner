@@ -291,9 +291,10 @@ fn main() -> Result<(), io::Error> {
     }
 
     cleanup(&mut terminal);
-    
+
     for mut process in app.processes {
-        process.stop();
+        println!("{}", process.child.unwrap().id());
+        // process.stop();
     }
 
     Ok(())

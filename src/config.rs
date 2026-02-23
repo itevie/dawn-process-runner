@@ -10,7 +10,8 @@ pub struct Config {
 pub struct ProcessConfig {
     pub name: String,
     pub cmd: Vec<String>,
-    pub cwd: Option<String>
+    pub cwd: Option<String>,
+    pub port: Option<u16>
 }
 
 pub fn load_config(path: &str) -> Result<Config, Box<dyn std::error::Error>> {

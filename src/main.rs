@@ -184,7 +184,7 @@ fn main() -> Result<(), io::Error> {
         config
             .processes
             .iter()
-            .map(|x| ManagedProcess::new(&x.name, x.cmd.clone(), x.cwd.clone()))
+            .map(|x| ManagedProcess::new(&x.name, x.cmd.clone(), x.cwd.clone(), x.port.clone()))
             .collect(),
     );
 
@@ -293,8 +293,8 @@ fn main() -> Result<(), io::Error> {
     cleanup(&mut terminal);
 
     for mut process in app.processes {
-        println!("{}", process.child.unwrap().id());
-        // process.stop();
+        // println!("{}", process.child.unwrap().id());
+        process.stop();
     }
 
     Ok(())

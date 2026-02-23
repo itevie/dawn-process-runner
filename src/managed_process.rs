@@ -13,10 +13,11 @@ pub struct ManagedProcess {
     pub started_at: Option<Instant>,
     pub status: Option<ExitStatus>,
     pub cwd: Option<String>,
+    pub port: Option<u16>,
 }
 
 impl ManagedProcess {
-    pub fn new(name: &str, command: Vec<String>, cwd: Option<String>) -> Self {
+    pub fn new(name: &str, command: Vec<String>, cwd: Option<String>, port: Option<u16>) -> Self {
         Self {
             name: name.into(),
             command,
@@ -25,6 +26,7 @@ impl ManagedProcess {
             logs: Arc::new(Mutex::new(Vec::new())),
             started_at: None,
             status: None,
+            port
         }
     }
 
@@ -78,31 +80,26 @@ impl ManagedProcess {
         }
     }
     pub fn stop(&mut self) {
-        if let Some(child) = self.child.take() {
+        if let Some(mut child) = self.child.take() {
 
-            let pid = child.id().to_string();
+            let _ = child.kill();
 
-            // --- Graceful shutdown ---
-            std::process::Command::new("kill")
-                .args(["-15", &pid]) // SIGTERM
-                .output()
-                .ok();
+            if let Some(port) = self.port {
+                if let Some(pid) = pid_from_port(port) {
+                    std::process::Command::new("kill")
+                        .args(["-15", &pid])
+                        .output()
+                        .ok();
 
-            // Wait a bit
-            std::thread::sleep(std::time::Duration::from_millis(500));
+                    std::thread::sleep(std::time::Duration::from_millis(500));
 
-            // Check if process is still alive
-            if std::process::Command::new("kill")
-                .args(["-0", &pid])
-                .output()
-                .is_ok()
-            {
-                // Force kill
-                std::process::Command::new("kill")
-                    .args(["-9", &pid])
-                    .output()
-                    .ok();
+                    std::process::Command::new("kill")
+                        .args(["-9", &pid])
+                        .output()
+                        .ok();
+                }
             }
+
 
             self.started_at = None;
         }
@@ -125,5 +122,27 @@ impl ManagedProcess {
         } else {
             "Stopped"
         }
+    }
+}
+
+fn pid_from_port(port: u16) -> Option<String> {
+    let cmd = format!(
+        "ss -lptn | grep :{} | sed -n 's/.*pid=\\([0-9]*\\).*/\\1/p'",
+        port
+    );
+
+    let output = std::process::Command::new("sh")
+        .args(["-c", &cmd])
+        .output()
+        .ok()?;
+
+    let pid = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .to_string();
+
+    if pid.is_empty() {
+        None
+    } else {
+        Some(pid)
     }
 }

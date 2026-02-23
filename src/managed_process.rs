@@ -78,34 +78,30 @@ impl ManagedProcess {
         }
     }
     pub fn stop(&mut self) {
-        if let Some(mut child) = self.child.take() {
+        if let Some(child) = self.child.take() {
 
-            #[cfg(unix)]
+            let pid = child.id().to_string();
+
+            // --- Graceful shutdown ---
+            std::process::Command::new("kill")
+                .args(["-15", &pid]) // SIGTERM
+                .output()
+                .ok();
+
+            // Wait a bit
+            std::thread::sleep(std::time::Duration::from_millis(500));
+
+            // Check if process is still alive
+            if std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .output()
+                .is_ok()
             {
-                use nix::sys::signal::{self, Signal};
-                use nix::unistd::Pid;
-
-                let pid = child.id() as i32;
-
-                // Kill process group, not just process
-                let _ = signal::kill(
-                    Pid::from_raw(-pid),
-                    Signal::SIGTERM
-                );
-
-                // Wait for graceful shutdown
-                thread::sleep(std::time::Duration::from_millis(500));
-
-                // Force kill if still alive
-                let _ = signal::kill(
-                    Pid::from_raw(-pid),
-                    Signal::SIGKILL
-                );
-            }
-
-            #[cfg(not(unix))]
-            {
-                let _ = child.kill();
+                // Force kill
+                std::process::Command::new("kill")
+                    .args(["-9", &pid])
+                    .output()
+                    .ok();
             }
 
             self.started_at = None;

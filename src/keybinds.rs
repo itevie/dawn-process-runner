@@ -11,6 +11,7 @@ pub enum KeybindType {
     Enter,
     Quit,
     Escape,
+    Update,
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -61,6 +62,7 @@ pub fn get_keybinds() -> HashMap<KeyCode, Keybind> {
             KeyCode::Enter,
             Keybind::new(KeybindType::Enter, "View Logs"),
         ),
+        (KeyCode::Char('u'), Keybind::new(KeybindType::Update, "Update")),
         (KeyCode::Char('q'), Keybind::new(KeybindType::Quit, "Quit")),
         (
             KeyCode::Esc,

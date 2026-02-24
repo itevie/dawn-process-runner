@@ -6,6 +6,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use std::sync::atomic::{AtomicBool, Ordering};
+use crate::config::ProcessConfig;
 
 const MAX_LOG_LINES: usize = 2000;
 const GRACEFUL_TIMEOUT: Duration = Duration::from_millis(1000);
@@ -15,6 +17,7 @@ pub struct ManagedProcess {
     pub command: Vec<String>,
     pub cwd: Option<String>,
     pub port: Option<u16>,
+    pub update_command: Option<Vec<String>>,
 
     pub child: Option<Child>,
     pub logs: Arc<Mutex<Vec<String>>>,
@@ -22,29 +25,28 @@ pub struct ManagedProcess {
     pub exit_status: Option<ExitStatus>,
 
     special_status: Option<String>,
+    needs_restart: Arc<AtomicBool>
 }
 
 impl ManagedProcess {
-    pub fn new(
-        name: &str,
-        command: Vec<String>,
-        cwd: Option<String>,
-        port: Option<u16>,
-    ) -> Self {
+    pub fn new(config: &ProcessConfig) -> Self {
         Self {
-            name: name.to_string(),
-            command,
-            cwd,
-            port,
+            name: config.name.to_string(),
+            command: config.cmd.clone(),
+            cwd: config.cwd.clone(),
+            port: config.port,
+            update_command: config.update_cmd.clone(),
             child: None,
             logs: Arc::new(Mutex::new(Vec::new())),
             started_at: None,
             exit_status: None,
-            special_status: None
+            special_status: None,
+            needs_restart: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub fn start(&mut self) {
+        self.special_status = None;
         if self.child.is_some() {
             return;
         }
@@ -80,6 +82,86 @@ impl ManagedProcess {
                 self.push_log(format!("Failed to start: {}", e));
             }
         }
+    }
+
+    pub fn update(&mut self) {
+        let update_args = match self.update_command.clone() {
+            Some(args) if !args.is_empty() => args,
+            _ => {
+                self.push_log("No valid update command configured");
+                return;
+            }
+        };
+
+        // Stop running process first
+        self.stop();
+
+        self.special_status = Some("Updating".to_string());
+
+        let logs = self.logs.clone();
+        let cwd = self.cwd.clone();
+        let start_command = self.command.clone();
+        let name = self.name.clone();
+
+
+        let needs_restart = self.needs_restart.clone();
+
+        thread::spawn(move || {
+            {
+                let mut guard = logs.lock().unwrap();
+                guard.push(format!("Updating {}", name));
+            }
+
+            let mut cmd = Command::new(&update_args[0]);
+            cmd.args(&update_args[1..]);
+
+            if let Some(ref dir) = cwd {
+                cmd.current_dir(dir);
+            }
+
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
+
+            match cmd.spawn() {
+                Ok(mut child) => {
+                    // stdout
+                    if let Some(stdout) = child.stdout.take() {
+                        let logs = logs.clone();
+                        thread::spawn(move || {
+                            let reader = BufReader::new(stdout);
+                            for line in reader.lines().flatten() {
+                                logs.lock().unwrap().push(line);
+                            }
+                        });
+                    }
+
+                    // stderr
+                    if let Some(stderr) = child.stderr.take() {
+                        let logs = logs.clone();
+                        thread::spawn(move || {
+                            let reader = BufReader::new(stderr);
+                            for line in reader.lines().flatten() {
+                                logs.lock().unwrap().push(line);
+                            }
+                        });
+                    }
+
+                    let status = child.wait();
+
+                    logs.lock().unwrap().push(format!(
+                        "Update finished with status: {:?}",
+                        status
+                    ));
+
+                    // Restart main process
+                    needs_restart.store(true, Ordering::SeqCst);
+
+                }
+                Err(e) => {
+                    logs.lock().unwrap().push(format!("Update failed: {}", e));
+                }
+            }
+        });
     }
 
     pub fn stop(&mut self) {
@@ -134,6 +216,12 @@ impl ManagedProcess {
     }
 
     pub fn status(&mut self) -> String {
+        if self.needs_restart.swap(false, Ordering::SeqCst) {
+            self.special_status = None;
+            self.start();
+            return "Restarting".to_string();
+        }
+
         if let Some(ref special) = self.special_status {
             return special.clone();
         }

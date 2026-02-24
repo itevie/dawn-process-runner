@@ -129,6 +129,10 @@ fn handle_key(app: &mut App, code: KeyCode) {
                     }
                     KeybindType::Enter => app.view = View::Logs,
                     KeybindType::Quit => app.view = View::QuitConfirm,
+                    KeybindType::Update => {
+                        let i = app.selected();
+                        app.processes[i].update();
+                    }
                     _ => {}
                 }
             }
@@ -184,10 +188,7 @@ fn main() -> Result<(), io::Error> {
             .iter()
             .map(|x| {
                 ManagedProcess::new(
-                    &x.name,
-                    x.cmd.clone(),
-                    x.cwd.clone(),
-                    x.port,
+                    x
                 )
             })
             .collect(),
@@ -319,7 +320,6 @@ fn main() -> Result<(), io::Error> {
     }
 
     // ---- Clean shutdown (processes first) ----
-    println!("Test");
     for p in &mut app.processes {
         println!("{}", p.name);
         p.stop();

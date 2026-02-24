@@ -11,7 +11,8 @@ pub struct ProcessConfig {
     pub name: String,
     pub cmd: Vec<String>,
     pub cwd: Option<String>,
-    pub port: Option<u16>
+    pub port: Option<u16>,
+    pub update_cmd: Option<Vec<String>>
 }
 
 pub fn load_config(path: &str) -> Result<Config, Box<dyn std::error::Error>> {

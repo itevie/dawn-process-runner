@@ -10,3 +10,4 @@ crossterm = "0.29.0"
 toml = "1.0.3"
 serde = { version =  "1.0.228",  features = ["derive"]  }
 nix = { version = "0.29.0", features = ["signal"] }
+ctrlc = "3.5.2"

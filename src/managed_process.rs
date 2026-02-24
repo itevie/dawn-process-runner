@@ -20,6 +20,8 @@ pub struct ManagedProcess {
     pub logs: Arc<Mutex<Vec<String>>>,
     pub started_at: Option<Instant>,
     pub exit_status: Option<ExitStatus>,
+
+    special_status: Option<String>,
 }
 
 impl ManagedProcess {
@@ -38,6 +40,7 @@ impl ManagedProcess {
             logs: Arc::new(Mutex::new(Vec::new())),
             started_at: None,
             exit_status: None,
+            special_status: None
         }
     }
 
@@ -84,32 +87,41 @@ impl ManagedProcess {
             let pid = child.id().to_string();
 
             // --- Graceful shutdown ---
+            self.special_status = Some("Killing".to_string());
             let _ = Command::new("kill").args(["-15", &pid]).output();
 
             let start = Instant::now();
 
+            let mut success = false;
             while start.elapsed() < GRACEFUL_TIMEOUT {
                 if let Ok(Some(status)) = child.try_wait() {
                     self.exit_status = Some(status);
                     self.started_at = None;
                     self.push_log("Stopped gracefully");
-                    return;
+                    self.special_status = Some("Killed Gracefully".to_string());
+                    success = true;
+                    break;
                 }
                 thread::sleep(Duration::from_millis(50));
             }
 
             // --- Force kill ---
-            let _ = Command::new("kill").args(["-9", &pid]).output();
-            let _ = child.wait(); // prevent zombie
+            if !success {
+                let _ = Command::new("kill").args(["-9", &pid]).output();
+                let _ = child.wait();
+                self.special_status = Some("Force Killed".to_string());
 
-            self.push_log("Force killed");
+                self.push_log("Force killed");
+            }
         }
 
         // Optional fallback: kill by port
         if let Some(port) = self.port {
+            self.special_status = Some("Killing By Port".to_string());
             if let Some(pid) = pid_from_port(port) {
                 let _ = Command::new("kill").args(["-9", &pid]).output();
                 self.push_log(format!("Killed PID {} on port {}", pid, port));
+                self.special_status = Some(format!("Killed {}", pid));
             }
         }
 
@@ -121,17 +133,21 @@ impl ManagedProcess {
         self.start();
     }
 
-    pub fn status(&mut self) -> &'static str {
+    pub fn status(&mut self) -> String {
+        if let Some(ref special) = self.special_status {
+            return special.clone();
+        }
+
         if let Some(child) = &mut self.child {
             if let Ok(Some(status)) = child.try_wait() {
                 self.exit_status = Some(status);
                 self.child = None;
                 self.started_at = None;
-                return "Stopped";
+                return "Stopped".to_string();
             }
-            return "Running";
+            return "Running".to_string();
         }
-        "Stopped"
+        "Stopped".to_string()
     }
 
     pub fn logs(&self) -> Vec<String> {
@@ -157,8 +173,9 @@ impl ManagedProcess {
     }
 
     fn push_log<S: Into<String>>(&self, msg: S) {
+        let v = msg.into();
         let mut logs = self.logs.lock().unwrap();
-        logs.push(msg.into());
+        logs.push(v);
     }
 }
 
